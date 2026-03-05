@@ -1,0 +1,23 @@
+[project]
+name = "gClaude"
+version = "0.2.0"
+description = "Email bot that answers Excel questions using Claude API with .xlsx support"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.coverage.run]
+source = ["src"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true

@@ -1,0 +1,70 @@
+name: Test & Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check src/ tests/
+
+      - name: Test with coverage
+        run: pytest --cov=src --cov-fail-under=90 -v
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev
+
+      - name: Build and push
+        run: |
+          IMAGE=us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/gclaude/gclaude:${{ github.sha }}
+          docker build -t $IMAGE .
+          docker push $IMAGE
+
+      - name: Deploy to Cloud Run
+        run: |
+          IMAGE=us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/gclaude/gclaude:${{ github.sha }}
+          gcloud run deploy gclaude \
+            --image $IMAGE \
+            --region us-central1 \
+            --memory 512Mi \
+            --cpu 1 \
+            --min-instances 0 \
+            --max-instances 3 \
+            --timeout 60 \
+            --set-secrets ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest \
+            --set-env-vars VERIFY_TOKEN=true \
+            --set-env-vars AUTHORIZED_USERS=${{ secrets.AUTHORIZED_USERS }} \
+            --allow-unauthenticated
