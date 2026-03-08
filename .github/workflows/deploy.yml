@@ -1,60 +1,64 @@
-name: Test & Deploy
+# .github/workflows/deploy.yml
+name: Deploy to Cloud Run
 
 on:
   push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main, develop]
+    branches:
+      - develop
+
+env:
+  PROJECT_ID: gclaude-dev
+  REGION: us-central1
+  SERVICE_NAME: excelbot-api
+  REPO_NAME: excelbot
+  IMAGE_NAME: excelbot-api
+
+permissions:
+  contents: read
+  id-token: write  # Required for WIF OIDC token exchange
 
 jobs:
-  test:
+  deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
         with:
-          python-version: '3.11'
+          workload_identity_provider: "projects/852829491271/locations/global/workloadIdentityPools/gclaude_Dev/providers/github-provider"
+          service_account: "gchat-dev@gclaude-dev.iam.gserviceaccount.com"
 
-      - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
 
-      - name: Lint
-        run: ruff check src/ tests/
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
-      - name: Test with coverage
-        run: pytest --cov=src --cov-fail-under=90 -v
+      - name: Build Docker image
+        run: |
+          docker build -t us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} .
+          docker tag us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+                     us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:latest
 
-  deploy-prod:
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    uses: ./.github/workflows/deploy-service.yml
-    with:
-      service_name: gclaude
-      max_instances: 3
-      daily_budget_usd: "5.00"
-      log_level: INFO
-      gcs_bucket_name: gclaude-prod-files
-      google_chat_project_number: ${{ vars.GOOGLE_CHAT_PROJECT_NUMBER_PROD }}
-    secrets:
-      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-      WIF_PROVIDER: ${{ secrets.WIF_PROVIDER }}
-      WIF_SERVICE_ACCOUNT: ${{ secrets.WIF_SERVICE_ACCOUNT }}
-      AUTHORIZED_USERS: ${{ secrets.AUTHORIZED_USERS_PROD }}
+      - name: Push Docker image
+        run: |
+          docker push us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker push us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:latest
 
-  deploy-dev:
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
-    uses: ./.github/workflows/deploy-service.yml
-    with:
-      service_name: gclaude-dev
-      max_instances: 1
-      daily_budget_usd: "1.00"
-      log_level: DEBUG
-      gcs_bucket_name: gclaude-dev-files
-      google_chat_project_number: ${{ vars.GOOGLE_CHAT_PROJECT_NUMBER_DEV }}
-    secrets:
-      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-      WIF_PROVIDER: ${{ secrets.WIF_PROVIDER }}
-      WIF_SERVICE_ACCOUNT: ${{ secrets.WIF_SERVICE_ACCOUNT }}
-      AUTHORIZED_USERS: ${{ secrets.AUTHORIZED_USERS_DEV }}
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image=us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --region=${{ env.REGION }} \
+            --platform=managed \
+            --allow-unauthenticated \
+            --min-instances=0 \
+            --max-instances=3 \
+            --memory=512Mi \
+            --cpu=1 \
+            --timeout=120s \
+            --service-account=gchat-dev@gclaude-dev.iam.gserviceaccount.com \
+            --project=${{ env.PROJECT_ID }}
