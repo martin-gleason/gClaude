@@ -1,4 +1,6 @@
 import base64
+import os
+import re
 from dataclasses import dataclass, field
 
 
@@ -20,7 +22,7 @@ class ParsedEmail:
     @property
     def question(self) -> str:
         if self.body.strip():
-            return self.body.strip()
+            return strip_reply_chain(self.body).strip()
         if self.subject.strip():
             return self.subject.strip()
         return ""
@@ -50,10 +52,17 @@ def parse_email_payload(payload: dict) -> ParsedEmail:
     )
 
 
+def _sanitize_filename(filename: str) -> str:
+    """Strip path components to prevent directory traversal."""
+    # Handle both Unix and Windows path separators
+    name = os.path.basename(filename.replace("\\", "/"))
+    return name or "attachment.xlsx"
+
+
 def decode_attachments(raw_attachments: list[dict]) -> list[EmailAttachment]:
     attachments = []
     for att in raw_attachments:
-        filename = att.get("filename", "")
+        filename = _sanitize_filename(att.get("filename", ""))
         mime_type = att.get("mime_type", "")
 
         if not _is_xlsx(filename, mime_type):
@@ -75,3 +84,25 @@ def _is_xlsx(filename: str, mime_type: str) -> bool:
     if mime_type in XLSX_MIME_TYPES:
         return True
     return filename.lower().endswith(".xlsx")
+
+
+# Pattern: "On <date>, <name> wrote:" line that precedes quoted text
+_REPLY_HEADER_RE = re.compile(
+    r"^On .+wrote:\s*$", re.MULTILINE | re.IGNORECASE
+)
+
+
+def strip_reply_chain(body: str) -> str:
+    """Remove quoted reply chains from email body.
+    Strips everything from the 'On ... wrote:' line onward."""
+    match = _REPLY_HEADER_RE.search(body)
+    if match:
+        return body[: match.start()]
+    # Fallback: strip lines starting with '>'
+    lines = body.split("\n")
+    result = []
+    for line in lines:
+        if line.startswith(">"):
+            continue
+        result.append(line)
+    return "\n".join(result)

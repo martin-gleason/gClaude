@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import openpyxl
 import pytest
 
-from src.claude.client import ClaudeApiError, ClaudeRateLimitError
+from src.claude.client import ClaudeApiError, ClaudeRateLimitError, ClaudeResponse
 from src.email.handler import handle_email
 
 XLSX_MIME = (
@@ -26,7 +26,11 @@ def _make_xlsx_bytes(data: list[list]) -> bytes:
 @pytest.fixture
 def mock_claude():
     client = MagicMock()
-    client.ask_with_context.return_value = "Here's the answer about VLOOKUP."
+    client.ask_with_context.return_value = ClaudeResponse(
+        text="Here's the answer about VLOOKUP.",
+        input_tokens=100,
+        output_tokens=50,
+    )
     return client
 
 
@@ -155,6 +159,24 @@ class TestHandleEmailWithXlsx:
         result = handle_email(payload, allowlist=[], claude_client=mock_claude)
         assert result["error"] is not None
         mock_claude.ask_with_context.assert_not_called()
+
+
+class TestLogSanitization:
+    def test_unauthorized_email_log_sanitized(self, mock_claude, caplog):
+        payload = {
+            "sender": "stranger@example.com",
+            "subject": "test",
+            "body": "question",
+            "message_id": "msg-sanitize",
+            "attachments": [],
+        }
+        import logging
+        with caplog.at_level(logging.WARNING):
+            handle_email(
+                payload, allowlist=["shannon@gmail.com"], claude_client=mock_claude
+            )
+        assert "stranger@example.com" not in caplog.text
+        assert "s******r@example.com" in caplog.text
 
 
 class TestHandleEmailClaudeErrors:

@@ -108,7 +108,15 @@ def format_summary_for_prompt(summary: SpreadsheetSummary) -> str:
     return "\n".join(parts)
 
 
+MAX_CELL_LENGTH = 1000
+
+
 def _cell_to_str(value) -> str:
     if value is None:
         return ""
-    return str(value)
+    text = str(value)
+    if len(text) > MAX_CELL_LENGTH:
+        text = text[:MAX_CELL_LENGTH] + "..."
+    # Escape pipes to prevent breaking markdown table formatting
+    text = text.replace("|", "\\|")
+    return text

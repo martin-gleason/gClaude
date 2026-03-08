@@ -2,9 +2,9 @@ name: Test & Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 jobs:
   test:
@@ -25,46 +25,36 @@ jobs:
       - name: Test with coverage
         run: pytest --cov=src --cov-fail-under=90 -v
 
-  deploy:
+  deploy-prod:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
+    uses: ./.github/workflows/deploy-service.yml
+    with:
+      service_name: gclaude
+      max_instances: 3
+      daily_budget_usd: "5.00"
+      log_level: INFO
+      gcs_bucket_name: gclaude-prod-files
+      google_chat_project_number: ${{ vars.GOOGLE_CHAT_PROJECT_NUMBER_PROD }}
+    secrets:
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      WIF_PROVIDER: ${{ secrets.WIF_PROVIDER }}
+      WIF_SERVICE_ACCOUNT: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      AUTHORIZED_USERS: ${{ secrets.AUTHORIZED_USERS_PROD }}
 
-    steps:
-      - uses: actions/checkout@v4
-
-      - id: auth
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
-
-      - uses: google-github-actions/setup-gcloud@v2
-
-      - name: Configure Docker
-        run: gcloud auth configure-docker us-central1-docker.pkg.dev
-
-      - name: Build and push
-        run: |
-          IMAGE=us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/gclaude/gclaude:${{ github.sha }}
-          docker build -t $IMAGE .
-          docker push $IMAGE
-
-      - name: Deploy to Cloud Run
-        run: |
-          IMAGE=us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/gclaude/gclaude:${{ github.sha }}
-          gcloud run deploy gclaude \
-            --image $IMAGE \
-            --region us-central1 \
-            --memory 512Mi \
-            --cpu 1 \
-            --min-instances 0 \
-            --max-instances 3 \
-            --timeout 60 \
-            --set-secrets ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest \
-            --set-env-vars VERIFY_TOKEN=true \
-            --set-env-vars AUTHORIZED_USERS=${{ secrets.AUTHORIZED_USERS }} \
-            --allow-unauthenticated
+  deploy-dev:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    uses: ./.github/workflows/deploy-service.yml
+    with:
+      service_name: gclaude-dev
+      max_instances: 1
+      daily_budget_usd: "1.00"
+      log_level: DEBUG
+      gcs_bucket_name: gclaude-dev-files
+      google_chat_project_number: ${{ vars.GOOGLE_CHAT_PROJECT_NUMBER_DEV }}
+    secrets:
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      WIF_PROVIDER: ${{ secrets.WIF_PROVIDER }}
+      WIF_SERVICE_ACCOUNT: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+      AUTHORIZED_USERS: ${{ secrets.AUTHORIZED_USERS_DEV }}

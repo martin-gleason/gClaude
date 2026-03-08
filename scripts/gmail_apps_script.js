@@ -1,21 +1,21 @@
 /**
  * Gmail Apps Script for ExcelBot
  *
- * Polls for unread emails with the "excelbot" label, sends them to
- * the Cloud Run webhook, and replies in-thread with Claude's response.
+ * Polls for unread emails with "excelbot" in the subject line, sends them to
+ * the webhook, and replies in-thread with Claude's response.
  *
  * Setup:
  * 1. Open https://script.google.com and create a new project
  * 2. Paste this entire file into Code.gs
  * 3. Set script properties (Project Settings > Script Properties):
- *    - WEBHOOK_URL: Your Cloud Run /email endpoint URL
- *    - WEBHOOK_SECRET: Must match GMAIL_WEBHOOK_SECRET in Cloud Run
- * 4. Create a Gmail label called "excelbot"
- * 5. Create a Gmail filter: to:your.email+excelbot@gmail.com → apply label "excelbot"
- * 6. Run createTrigger() once to set up the 1-minute polling
+ *    - WEBHOOK_URL: Your webhook /email endpoint URL
+ *    - WEBHOOK_SECRET: Must match GMAIL_WEBHOOK_SECRET on the server
+ * 4. Run createTrigger() once to set up the 1-minute polling
+ * 5. Send an email with "excelbot" in the subject line to test
  */
 
-var LABEL_NAME = "excelbot";
+var KEYWORD = "excelbot";
+var PROCESSED_LABEL = "excelbot-processed";
 
 function processEmails() {
   var props = PropertiesService.getScriptProperties();
@@ -27,19 +27,17 @@ function processEmails() {
     return;
   }
 
-  var label = GmailApp.getUserLabelByName(LABEL_NAME);
-  if (!label) {
-    Logger.log("Label '" + LABEL_NAME + "' not found. Create it first.");
-    return;
+  // Search for unread emails with "excelbot" in the subject
+  var threads = GmailApp.search("subject:" + KEYWORD + " is:unread -label:" + PROCESSED_LABEL, 0, 10);
+
+  // Create the processed label if it doesn't exist
+  var processedLabel = GmailApp.getUserLabelByName(PROCESSED_LABEL);
+  if (!processedLabel) {
+    processedLabel = GmailApp.createLabel(PROCESSED_LABEL);
   }
 
-  var threads = label.getThreads(0, 10);
   for (var i = 0; i < threads.length; i++) {
     var thread = threads[i];
-    if (!thread.isUnread()) {
-      continue;
-    }
-
     var messages = thread.getMessages();
     var message = messages[messages.length - 1];
 
@@ -58,7 +56,7 @@ function processEmails() {
     }
 
     thread.markRead();
-    thread.removeLabel(label);
+    thread.addLabel(processedLabel);
   }
 }
 
