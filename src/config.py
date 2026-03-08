@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     SONNET_OUTPUT_COST_PER_M: float = 15.00
     OPUS_INPUT_COST_PER_M: float = 5.00
     OPUS_OUTPUT_COST_PER_M: float = 25.00
+    WEB_CHAT_SECRET: str = ""
+    MAX_CONVERSATION_HISTORY_PAIRS: int = 20
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

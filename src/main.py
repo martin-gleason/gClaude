@@ -5,9 +5,15 @@ from functools import lru_cache
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 
 from src.chat.context import ThreadContextStore
-from src.claude.client import ClaudeClient
+from src.claude.client import ClaudeApiError, ClaudeClient, ClaudeRateLimitError
 from src.claude.usage import CostTracker, RateLimitTracker
 from src.config import Settings, get_settings
+from src.web_chat import (
+    WebChatRequest,
+    WebChatResponse,
+    summarize_uploaded_file,
+    verify_web_chat_secret,
+)
 
 app = FastAPI(title="ExcelBot", version="0.5.0")
 
@@ -185,3 +191,89 @@ async def chat_webhook(
         rate_limit_tracker=rate_tracker,
         cost_tracker=cost_tracker,
     )
+
+
+@app.post("/web-chat", response_model=WebChatResponse)
+async def web_chat_endpoint(
+    request: WebChatRequest,
+    _auth: None = Depends(verify_web_chat_secret),
+    settings: Settings = Depends(get_settings),
+    claude_client: ClaudeClient = Depends(get_claude_client),
+) -> WebChatResponse:
+    """Chat endpoint for the Apps Script Web App frontend."""
+    logger = logging.getLogger(__name__)
+
+    # Authorization check
+    allowed = settings.authorized_users_list
+    if allowed and request.user_email.lower() not in [u.lower() for u in allowed]:
+        return WebChatResponse(
+            message="Sorry, I'm not set up to help this account.",
+            error="unauthorized",
+        )
+
+    # Budget enforcement
+    cost_tracker = get_cost_tracker()
+    if cost_tracker.daily_cost_usd > cost_tracker.daily_budget_usd:
+        return WebChatResponse(
+            message="ExcelBot has reached its daily usage limit. Please try again tomorrow.",
+            error="budget_exceeded",
+        )
+
+    # Cap conversation history server-side
+    max_pairs = settings.MAX_CONVERSATION_HISTORY_PAIRS
+    history_messages = request.conversation_history[-(max_pairs * 2):]
+
+    # Build message history for ClaudeClient
+    history_dicts = [{"role": msg.role, "content": msg.content} for msg in history_messages]
+
+    # Process file attachment if present
+    spreadsheet_context = None
+    if request.file_data and request.file_name:
+        spreadsheet_context = summarize_uploaded_file(
+            request.file_data,
+            request.file_name,
+            max_size_mb=settings.MAX_XLSX_SIZE_MB,
+            max_preview_rows=settings.MAX_PREVIEW_ROWS,
+        )
+
+    # Build user content with optional spreadsheet context
+    user_content = request.message
+    if spreadsheet_context:
+        user_content = f"[Uploaded file]\n{spreadsheet_context}\n\n[Question]\n{request.message}"
+
+    # Add current message to history
+    history_dicts.append({"role": "user", "content": user_content})
+
+    # Call Claude via the existing wrapper
+    rate_tracker = get_rate_limit_tracker()
+    try:
+        response = claude_client._call_api(messages=history_dicts)
+
+        # Record usage
+        rate_tracker.record_request(input_tokens=response.input_tokens)
+        cost_tracker.record_usage(
+            claude_client.model,
+            response.input_tokens,
+            response.output_tokens,
+            user=request.user_email,
+        )
+
+        return WebChatResponse(message=response.text)
+
+    except ClaudeRateLimitError:
+        return WebChatResponse(
+            message="I'm getting too many questions right now. Wait a moment and try again.",
+            error="rate_limited",
+        )
+    except ClaudeApiError as e:
+        logger.error("Claude API error in web-chat: %s", e)
+        return WebChatResponse(
+            message="Sorry, I ran into a problem. Try asking again in a moment.",
+            error="internal_error",
+        )
+    except Exception as e:
+        logger.error("Unexpected error in web-chat: %s", e)
+        return WebChatResponse(
+            message="Sorry, something went wrong. Please try again.",
+            error="internal_error",
+        )
